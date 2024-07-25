@@ -1,11 +1,11 @@
 import json
-from datasets import Dataset
-from transformers import AutoTokenizer, AutoModelForCausalLM, TrainingArguments, Trainer
-import numpy as np
-import evaluate
+from datasets import Dataset, load_metric
+from transformers import AutoTokenizer, AutoModelForCausalLM, Seq2SeqTrainingArguments, Trainer
 import torch
-import onnx
-import onnxruntime
+import numpy as np
+
+# Check the device
+device = "cuda"
 
 # Load your custom dataset from JSON file
 def load_json_dataset(file_path):
@@ -13,10 +13,14 @@ def load_json_dataset(file_path):
         data = json.load(f)
     return data
 
+torch.cuda.empty_cache()
+
 data = load_json_dataset("./finetune.json")
 
 # Convert the loaded data to Hugging Face Dataset format
 dataset = Dataset.from_list(data)
+# Get first ten data
+# dataset = dataset.select(range(10))
 
 # Initialize the tokenizer
 tokenizer = AutoTokenizer.from_pretrained("microsoft/Phi-3-mini-4k-instruct")
@@ -39,69 +43,66 @@ train_dataset = train_test_split["train"]
 eval_dataset = train_test_split["test"]
 
 # Load the model
-model = AutoModelForCausalLM.from_pretrained("microsoft/Phi-3-mini-4k-instruct")
+model = AutoModelForCausalLM.from_pretrained("microsoft/Phi-3-mini-4k-instruct").to(device)
 
-# Define training arguments
-training_args = TrainingArguments(output_dir="test_trainer")
+# Define training arguments with gradient accumulation and mixed precision training
+training_args = Seq2SeqTrainingArguments(
+    output_dir='./outputs',          # output directory to save model checkpoint
+    num_train_epochs=3,              # increase epochs for better results
+    per_device_train_batch_size=2,
+    per_device_eval_batch_size=2,
+    gradient_accumulation_steps=8,
+    learning_rate=2e-5,              # you can try different learning rates
+    weight_decay=0.01,               # increase weight_decay to regularize and avoid overfitting
+    fp16=True,
+    evaluation_strategy="epoch",
+    save_total_limit=3,
+    predict_with_generate=True,
+)
 
 # Define the metric for evaluation
-metric = evaluate.load("accuracy")
+# em_metric = load_metric("exact_match")
+# f1_metric = load_metric("f1")
+# bleu_metric = load_metric("bleu")
+rouge_metric = load_metric("rouge")
 
-def compute_metrics(eval_pred):
-    logits, labels = eval_pred
-    predictions = np.argmax(logits, axis=-1)
-    return metric.compute(predictions=predictions, references=labels)
-
+def compute_metrics(eval_preds):
+    preds, labels = eval_preds
+    # Calculate batch size and desired sub-batch size
+    batch_size = preds.shape[0]
+    sub_batch_size = 3  
+    decoded_preds, decoded_labels = [], []
+    for i in range(0, batch_size, sub_batch_size):
+        sub_preds = preds[i:min(i + sub_batch_size, batch_size)]
+        sub_labels = labels[i:min(i + sub_batch_size, batch_size)]
+        # Decode the sub-batch using your current decoding logic
+        sub_decoded_preds = tokenizer.batch_decode(sub_preds, skip_special_tokens=True)
+        sub_decoded_labels = tokenizer.batch_decode(sub_labels, skip_special_tokens=True)
+        # Append the decoded sub-batches to the main lists
+        decoded_preds.extend(sub_decoded_preds)
+        decoded_labels.extend(sub_decoded_labels)
+    rouge_output = rouge_metric.compute(predictions=decoded_preds, references=decoded_labels)
+    return rouge_output
 # Initialize the Trainer
 trainer = Trainer(
     model=model,
     args=training_args,
     train_dataset=train_dataset,
     eval_dataset=eval_dataset,
-    compute_metrics=compute_metrics,
+    tokenizer=tokenizer,
+    # compute_metrics=compute_metrics,
 )
-
-# Assume the model and tokenizer loaded and paths set correctly in `export_onnx.py`
-def export_onnx(model, tokenizer, export_path='model.onnx'):
-    # Example input text for tracing
-    text = "Hello, my dog is cute"
-
-    # Tokenize the input text
-    inputs = tokenizer(text, return_tensors="pt")
-
-    # Export the model to ONNX
-    torch.onnx.export(
-        model,                            # Model to export
-        (inputs["input_ids"],),           # Example input
-        export_path,                      # Path to save the ONNX file
-        input_names=["input_ids"],        # Names of the input tensors
-        output_names=["output"],          # Names of the output tensors
-        dynamic_axes={"input_ids": {0: "batch_size"}, "output": {0: "batch_size"}},  # Dynamic axes
-        opset_version=13                  # ONNX opset version
-    )
-
-    print(f"Model successfully exported to {export_path}")
-
-    # Verify the ONNX model
-    onnx_model = onnx.load(export_path)
-    onnx.checker.check_model(onnx_model)
-    print("ONNX model is valid.")
-
-    # Run the model with ONNX Runtime
-    ort_session = onnxruntime.InferenceSession(export_path)
-
-    def to_numpy(tensor):
-        return tensor.detach().cpu().numpy() if tensor.requires_grad else tensor.cpu().numpy()
-
-    # Get the ONNX model input
-    ort_inputs = {ort_session.get_inputs()[0].name: to_numpy(inputs["input_ids"])}
-
-    # Run the model
-    ort_outs = ort_session.run(None, ort_inputs)
-
-    print("ONNX model output:", ort_outs)
 
 # Train the model
 if __name__ == "__main__":
-    trainer.train()
-    export_onnx(trainer.model, tokenizer)
+    try:
+        trainer.train()
+        # Save the model and tokenizer after training is done
+        trainer.save_model("outputs")  # 保存模型
+        tokenizer.save_pretrained("outputs")  # 保存tokenizer
+    except RuntimeError as e:
+        if 'out of memory' in str(e):
+            print('Out of memory error caught: Cleaning up GPU memory.')
+            torch.cuda.empty_cache()
+        else:
+            raise e
