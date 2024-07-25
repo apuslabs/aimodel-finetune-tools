@@ -4,7 +4,18 @@ from transformers import AutoTokenizer, AutoModelForCausalLM, Seq2SeqTrainingArg
 import torch
 import numpy as np
 
-# Check the device
+# Read dataset filepath, model name, and output directory from command line
+import argparse
+parser = argparse.ArgumentParser()
+parser.add_argument("--dataset", type=str, default="./datasets/finetune-qa.json", help="Path to the dataset")
+parser.add_argument("--model_name", type=str, default="microsoft/Phi-3-mini-4k-instruct", help="Model name")
+parser.add_argument("--output_dir", type=str, default="./models/v3", help="Output directory")
+args = parser.parse_args()
+dataset_path = args.dataset
+model_name = args.model_name
+output_dir = args.output_dir
+
+torch.cuda.empty_cache()
 device = "cuda"
 
 # Load your custom dataset from JSON file
@@ -13,26 +24,43 @@ def load_json_dataset(file_path):
         data = json.load(f)
     return data
 
-torch.cuda.empty_cache()
 
-data = load_json_dataset("./finetune.json")
+data = load_json_dataset(dataset_path)
 
 # Convert the loaded data to Hugging Face Dataset format
 dataset = Dataset.from_list(data)
 # Get first ten data
-# dataset = dataset.select(range(10))
+dataset = dataset.select(range(10))
 
 # Initialize the tokenizer
-tokenizer = AutoTokenizer.from_pretrained("microsoft/Phi-3-mini-4k-instruct")
+tokenizer = AutoTokenizer.from_pretrained(model_name)
 
 # Tokenize the dataset
 def tokenize_function(examples):
     # Ensure responses are strings
-    examples["response"] = [" ".join(r) if isinstance(r, list) else r for r in examples["response"]]
+    examples["response"] = [" ".join(r) + "<|endoftext|>" if isinstance(r, list) else r for r in examples["response"]]
+    # add <|system|>You're Sam Williams.<|end|><|user|> to the begin and <|end|><|assistant|> to the end
+    examples["context"] = ["<|system|>You're Sam Williams.<|end|><|user|>" + c + "<|end|><|assistant|>" for c in examples["context"]]
     
-    inputs = tokenizer(examples["context"], padding="max_length", truncation=True, max_length=512)
-    outputs = tokenizer(examples["response"], padding="max_length", truncation=True, max_length=512)
-    inputs["labels"] = outputs["input_ids"]
+    inputs = tokenizer(
+        text=examples["context"],
+        text_pair=examples["response"],
+        add_special_tokens=True,
+        padding="max_length",
+        truncation=True,
+        max_length=512,
+        return_attention_mask=True,
+    )
+
+    # Create labels by shifting the input_ids to the right
+    inputs["labels"] = tokenizer(
+        text=examples["response"],
+        add_special_tokens=True,
+        padding="max_length",
+        truncation=True,
+        max_length=512,
+        return_attention_mask=True,
+    )["input_ids"]
     return inputs
 
 tokenized_datasets = dataset.map(tokenize_function, batched=True)
@@ -43,20 +71,20 @@ train_dataset = train_test_split["train"]
 eval_dataset = train_test_split["test"]
 
 # Load the model
-model = AutoModelForCausalLM.from_pretrained("microsoft/Phi-3-mini-4k-instruct").to(device)
+model = AutoModelForCausalLM.from_pretrained(model_name).to(device)
 
 # Define training arguments with gradient accumulation and mixed precision training
 training_args = Seq2SeqTrainingArguments(
-    output_dir='./outputs',          # output directory to save model checkpoint
-    num_train_epochs=3,              # increase epochs for better results
+    output_dir=output_dir,          # output directory to save model checkpoint
+    num_train_epochs=5,              # increase epochs for better results
     per_device_train_batch_size=2,
     per_device_eval_batch_size=2,
-    gradient_accumulation_steps=8,
+    gradient_accumulation_steps=4,
     learning_rate=2e-5,              # you can try different learning rates
     weight_decay=0.01,               # increase weight_decay to regularize and avoid overfitting
     fp16=True,
-    evaluation_strategy="epoch",
-    save_total_limit=3,
+    evaluation_strategy="steps",
+    save_total_limit=5,
     predict_with_generate=True,
 )
 
@@ -83,6 +111,7 @@ def compute_metrics(eval_preds):
         decoded_labels.extend(sub_decoded_labels)
     rouge_output = rouge_metric.compute(predictions=decoded_preds, references=decoded_labels)
     return rouge_output
+
 # Initialize the Trainer
 trainer = Trainer(
     model=model,
@@ -98,8 +127,8 @@ if __name__ == "__main__":
     try:
         trainer.train()
         # Save the model and tokenizer after training is done
-        trainer.save_model("outputs")  # 保存模型
-        tokenizer.save_pretrained("outputs")  # 保存tokenizer
+        trainer.save_model(output_dir)  # 保存模型
+        tokenizer.save_pretrained(output_dir)  # 保存tokenizer
     except RuntimeError as e:
         if 'out of memory' in str(e):
             print('Out of memory error caught: Cleaning up GPU memory.')

@@ -1,4 +1,5 @@
 .venv
-outputs
+models
+gguf
 onnx
 phi3.gguf
