@@ -30,7 +30,7 @@ data = load_json_dataset(dataset_path)
 # Convert the loaded data to Hugging Face Dataset format
 dataset = Dataset.from_list(data)
 # Get first ten data
-dataset = dataset.select(range(10))
+# dataset = dataset.select(range(10))
 
 # Initialize the tokenizer
 tokenizer = AutoTokenizer.from_pretrained(model_name)
@@ -127,8 +127,8 @@ if __name__ == "__main__":
     try:
         trainer.train()
         # Save the model and tokenizer after training is done
-        trainer.save_model(output_dir)  # 保存模型
-        tokenizer.save_pretrained(output_dir)  # 保存tokenizer
+        trainer.save_model(output_dir)  # save model
+        tokenizer.save_pretrained(output_dir)  # save tokenizer
     except RuntimeError as e:
         if 'out of memory' in str(e):
             print('Out of memory error caught: Cleaning up GPU memory.')

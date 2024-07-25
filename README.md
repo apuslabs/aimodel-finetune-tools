@@ -10,8 +10,8 @@ This project focuses on fine-tune model for AO(llama.cpp), this project is an ex
 4. Huggingface
    1. `https://huggingface.co/docs/huggingface_hub/en/guides/cli`
    2. Sign Up & Get AccessToken `https://huggingface.co/docs/hub/en/security-tokens`
-   3. `huggingface login`
-   4. Agree to the terms of model, for example, Phi3 `https://huggingface.co/microsoft/Phi-3-mini-4k-instruct`
+   3. `huggingface-cli login`
+   4. [optional]Agree to the terms of model, for example, Phi3 `https://huggingface.co/microsoft/Phi-3-mini-4k-instruct`
 
 ## Installation Steps
 
@@ -53,7 +53,7 @@ If your GPU server has limited VRAM, consider using mixed precision training or 
 AO use `llama.cpp` as the backend for its AI functionalities, which use gguf format for model storage and inference. Ensure compatibility with the latest version of `llama.cpp` to leverage the full capabilities of the fine-tuned model.
 
 **Convert to GGUF**
-`python llama.cpp/convert_hf_to_gguf.py models/v3   --outfile gguf/phi3-4k-v0.1.gguf   --outtype q8_0`
+`python llama.cpp/convert_hf_to_gguf.py models/v3 --outfile gguf/phi3-4k-v0.1.gguf  --outtype q8_0`
 
 ### Test in llama.cpp
 
